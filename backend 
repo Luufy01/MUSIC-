@@ -1,1 +1,139 @@
-b
+const express = require('express');
+const ytdl = require('ytdl-core');
+const yts = require('youtube-search-api');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(cors());
+app.use(express.json());
+
+const urlCache = new Map();
+const CACHE_DURATION = 6 * 60 * 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of urlCache.entries()) {
+    if (now - value.timestamp > CACHE_DURATION) {
+      urlCache.delete(key);
+    }
+  }
+}, 60 * 60 * 1000);
+
+async function getAudioStreamUrl(videoId) {
+  const cacheKey = videoId;
+  const cached = urlCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
+    return cached.url;
+  }
+
+  try {
+    const info = await ytdl.getInfo(videoId);
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+    
+    if (audioFormats.length === 0) {
+      throw new Error('No audio formats available');
+    }
+
+    const bestAudio = audioFormats.reduce((best, current) => {
+      const bestBitrate = parseInt(best.audioBitrate) || 0;
+      const currentBitrate = parseInt(current.audioBitrate) || 0;
+      return currentBitrate > bestBitrate ? current : best;
+    });
+
+    const streamUrl = bestAudio.url;
+    
+    urlCache.set(cacheKey, {
+      url: streamUrl,
+      timestamp: Date.now()
+    });
+
+    return streamUrl;
+  } catch (error) {
+    console.error('Error getting audio stream:', error);
+    throw error;
+  }
+}
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    cacheSize: urlCache.size
+  });
+});
+
+app.get('/api/search', async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    console.log(Searching for: ${query});
+    const results = await yts.GetListByKeyword(query, false, 20);
+    
+    const tracks = results.items
+      .filter(item => item.type === 'video' && item.length)
+      .map(item => ({
+        id: item.id,
+        title: item.title,
+        artist: item.channelTitle,
+        duration: item.length.simpleText,
+        thumbnail: item.thumbnail.thumbnails[item.thumbnail.thumbnails.length - 1].url,
+        views: item.viewCount.simpleText || '0 views',
+        url: https://www.youtube.com/watch?v=${item.id}
+      }));
+
+    res.json({ tracks });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: 'Failed to search for music' });
+  }
+});
+
+app.get('/api/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    
+    if (!ytdl.validateID(videoId)) {
+      return res.status(400).json({ error: 'Invalid video ID' });
+    }
+
+    const streamUrl = await getAudioStreamUrl(videoId);
+    res.json({ streamUrl });
+  } catch (error) {
+    console.error('Stream error:', error);
+    res.status(500).json({ error: 'Failed to get audio stream' });
+  }
+});
+
+app.get('/api/trending', async (req, res) => {
+  try {
+    console.log('Fetching trending music...');
+    const results = await yts.GetListByKeyword('popular songs 2024', false, 20);
+    
+    const tracks = results.items
+      .filter(item => item.type === 'video' && item.length)
+      .map(item => ({
+        id: item.id,
+        title: item.title,
+        artist: item.channelTitle,
+        duration: item.length.simpleText,
+        thumbnail: item.thumbnail.thumbnails[item.thumbnail.thumbnails.length - 1].url,
+        views: item.viewCount.simpleText || '0 views',
+        url: https://www.youtube.com/watch?v=${item.id}
+      }));
+
+    res.json({ tracks });
+  } catch (error) {
+    console.error('Trending error:', error);
+    res.status(500).json({ error: 'Failed to get trending music' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(🎵 Music Backend Server running on port ${PORT});
+});
